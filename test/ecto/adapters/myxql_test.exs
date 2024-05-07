@@ -1152,16 +1152,6 @@ defmodule Ecto.Adapters.MyXQLTest do
                ~s{INNER JOIN `schema` AS s2 ON TRUE}
   end
 
-  test "join with invalid qualifier" do
-    assert_raise Ecto.QueryError, ~r/join qualifier :array is not supported/, fn ->
-      Schema
-      |> join(:array, [p], q in Schema2, on: p.x == q.z)
-      |> select([], true)
-      |> plan()
-      |> all()
-    end
-  end
-
   test "join with hints" do
     assert Schema
            |> join(:inner, [p], q in Schema2, on: true, hints: ["USE INDEX FOO", "USE INDEX BAR"])
@@ -1609,7 +1599,7 @@ defmodule Ecto.Adapters.MyXQLTest do
 
   test "create table with prefix" do
     create =
-      {:create, table(:posts, prefix: :foo),
+      {:create, table(:posts, prefix: "foo"),
        [{:add, :category_0, %Reference{table: :categories}, []}]}
 
     assert execute_ddl(create) == [
@@ -1623,7 +1613,7 @@ defmodule Ecto.Adapters.MyXQLTest do
 
   test "create table with comment on columns and table" do
     create =
-      {:create, table(:posts, comment: "comment", prefix: :foo),
+      {:create, table(:posts, comment: "comment", prefix: "foo"),
        [
          {:add, :category_0, %Reference{table: :categories}, [comment: "column comment"]},
          {:add, :created_at, :datetime, []},
@@ -1661,8 +1651,8 @@ defmodule Ecto.Adapters.MyXQLTest do
          {:add, :category_3, %Reference{table: :categories, on_delete: :delete_all},
           [null: false]},
          {:add, :category_4, %Reference{table: :categories, on_delete: :nilify_all}, []},
-         {:add, :category_5, %Reference{table: :categories, prefix: :foo, on_delete: :nilify_all},
-          []},
+         {:add, :category_5,
+          %Reference{table: :categories, options: [prefix: "foo"], on_delete: :nilify_all}, []},
          {:add, :category_6,
           %Reference{table: :categories, with: [here: :there], on_delete: :nilify_all}, []}
        ]}
@@ -1734,6 +1724,22 @@ defmodule Ecto.Adapters.MyXQLTest do
     assert execute_ddl(create) == [
              """
              CREATE TABLE `posts` (`a` integer, `b` integer, `name` varchar(255), PRIMARY KEY (`a`,`b`)) ENGINE = INNODB
+             """
+             |> remove_newlines
+           ]
+  end
+
+  test "create table with generated column" do
+    create =
+      {:create, table(:posts),
+       [
+         {:add, :id, :integer, [primary_key: true]},
+         {:add, :id_float, :float, [generated: ~s|(CAST(id AS double))|]}
+       ]}
+
+    assert execute_ddl(create) == [
+             """
+             CREATE TABLE `posts` (`id` integer, `id_float` double AS (CAST(id AS double)), PRIMARY KEY (`id`)) ENGINE = INNODB
              """
              |> remove_newlines
            ]
@@ -1885,14 +1891,14 @@ defmodule Ecto.Adapters.MyXQLTest do
   end
 
   test "drop table with prefixes" do
-    drop = {:drop, table(:posts, prefix: :foo), :restrict}
+    drop = {:drop, table(:posts, prefix: "foo"), :restrict}
     assert execute_ddl(drop) == [~s|DROP TABLE `foo`.`posts`|]
   end
 
   test "drop constraint" do
     assert_raise ArgumentError, ~r/MySQL adapter does not support constraints/, fn ->
       execute_ddl(
-        {:drop, constraint(:products, "price_must_be_positive", prefix: :foo), :restrict}
+        {:drop, constraint(:products, "price_must_be_positive", prefix: "foo"), :restrict}
       )
     end
   end
@@ -1900,7 +1906,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   test "drop_if_exists constraint" do
     assert_raise ArgumentError, ~r/MySQL adapter does not support constraints/, fn ->
       execute_ddl(
-        {:drop_if_exists, constraint(:products, "price_must_be_positive", prefix: :foo),
+        {:drop_if_exists, constraint(:products, "price_must_be_positive", prefix: "foo"),
          :restrict}
       )
     end
@@ -1992,7 +1998,7 @@ defmodule Ecto.Adapters.MyXQLTest do
 
   test "alter table with prefix" do
     alter =
-      {:alter, table(:posts, prefix: :foo),
+      {:alter, table(:posts, prefix: "foo"),
        [
          {:add, :author_id, %Reference{table: :author}, []},
          {:modify, :permalink_id, %Reference{table: :permalinks}, null: false}
@@ -2055,7 +2061,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   end
 
   test "create index with prefix" do
-    create = {:create, index(:posts, [:category_id, :permalink], prefix: :foo)}
+    create = {:create, index(:posts, [:category_id, :permalink], prefix: "foo")}
 
     assert execute_ddl(create) ==
              [
@@ -2112,7 +2118,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   end
 
   test "drop index with prefix" do
-    drop = {:drop, index(:posts, [:id], name: "posts$main", prefix: :foo), :restrict}
+    drop = {:drop, index(:posts, [:id], name: "posts$main", prefix: "foo"), :restrict}
     assert execute_ddl(drop) == [~s|DROP INDEX `posts$main` ON `foo`.`posts`|]
   end
 
@@ -2130,7 +2136,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   end
 
   test "rename table with prefix" do
-    rename = {:rename, table(:posts, prefix: :foo), table(:new_posts, prefix: :foo)}
+    rename = {:rename, table(:posts, prefix: "foo"), table(:new_posts, prefix: "foo")}
     assert execute_ddl(rename) == [~s|RENAME TABLE `foo`.`posts` TO `foo`.`new_posts`|]
   end
 
@@ -2143,7 +2149,7 @@ defmodule Ecto.Adapters.MyXQLTest do
   end
 
   test "rename column in prefixed table" do
-    rename = {:rename, table(:posts, prefix: :foo), :given_name, :first_name}
+    rename = {:rename, table(:posts, prefix: "foo"), :given_name, :first_name}
 
     assert execute_ddl(rename) == [
              ~s|ALTER TABLE `foo`.`posts` RENAME COLUMN `given_name` TO `first_name`|

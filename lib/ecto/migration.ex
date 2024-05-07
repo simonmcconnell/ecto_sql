@@ -163,14 +163,16 @@ defmodule Ecto.Migration do
 
   ## Executing and flushing
 
-  Instructions inside of migrations are not executed immediately. Instead
-  they are performed after the relevant `up`, `change`, or `down` callback
-  terminates.
+  Most functions in this module, when executed inside of migrations, are not
+  executed immediately. Instead they are performed after the relevant `up`,
+  `change`, or `down` callback terminates. Any other functions, such as
+  functions provided by `Ecto.Repo`, will be executed immediately unless they
+  are called from within an anonymous function passed to `execute/1`.
 
-  However, in some situations you may want to guarantee that all of the
-  previous steps have been executed before continuing. This is useful when
-  you need to apply a set of changes to the table before continuing with the
-  migration. This can be done with `flush/0`:
+  In some situations you may want to guarantee that all of the previous steps
+  have been executed before continuing. This is useful when you need to apply a
+  set of changes to the table before continuing with the migration. This can be
+  done with `flush/0`:
 
       def up do
         ...
@@ -393,7 +395,7 @@ defmodule Ecto.Migration do
 
     @type t :: %__MODULE__{
             table: String.t(),
-            prefix: atom,
+            prefix: String.t() | nil,
             name: atom,
             columns: [atom | String.t()],
             unique: boolean,
@@ -418,7 +420,7 @@ defmodule Ecto.Migration do
 
     @type t :: %__MODULE__{
             name: String.t(),
-            prefix: atom | nil,
+            prefix: String.t() | nil,
             comment: String.t() | nil,
             primary_key: boolean | keyword(),
             engine: atom,
@@ -441,18 +443,25 @@ defmodule Ecto.Migration do
               on_update: :nothing,
               validate: true,
               with: [],
-              match: nil
+              match: nil,
+              options: []
 
+    @typedoc """
+    The reference struct.
+
+    The `:prefix` field is deprecated and should instead be stored in the `:options` field.
+    """
     @type t :: %__MODULE__{
             table: String.t(),
-            prefix: atom | nil,
+            prefix: String.t() | nil,
             column: atom,
             type: atom,
             on_delete: atom,
             on_update: atom,
             validate: boolean,
             with: list,
-            match: atom | nil
+            match: atom | nil,
+            options: [{:prefix, String.t() | nil}]
           }
   end
 
@@ -473,7 +482,7 @@ defmodule Ecto.Migration do
     @type t :: %__MODULE__{
             name: atom,
             table: String.t(),
-            prefix: atom | nil,
+            prefix: String.t() | nil,
             check: String.t() | nil,
             exclude: String.t() | nil,
             comment: String.t() | nil,
@@ -758,7 +767,7 @@ defmodule Ecto.Migration do
   end
 
   def table(name, opts) when is_binary(name) and is_list(opts) do
-    struct(%Table{name: name}, opts)
+    struct!(%Table{name: name}, opts)
   end
 
   @doc ~S"""
@@ -924,7 +933,7 @@ defmodule Ecto.Migration do
 
   def index(table, columns, opts) when is_binary(table) and is_list(columns) and is_list(opts) do
     validate_index_opts!(opts)
-    index = struct(%Index{table: table, columns: columns}, opts)
+    index = struct!(%Index{table: table, columns: columns}, opts)
     %{index | name: index.name || default_index_name(index)}
   end
 
@@ -942,10 +951,15 @@ defmodule Ecto.Migration do
   defp default_index_name(index) do
     [index.table, index.columns, "index"]
     |> List.flatten()
-    |> Enum.map(&to_string(&1))
-    |> Enum.map(&String.replace(&1, ~r"[^\w_]", "_"))
-    |> Enum.map(&String.replace_trailing(&1, "_", ""))
-    |> Enum.join("_")
+    |> Enum.map_join(
+      "_",
+      fn item ->
+        item
+        |> to_string()
+        |> String.replace(~r"[^\w]", "_")
+        |> String.replace_trailing("_", "")
+      end
+    )
     |> String.to_atom()
   end
 
@@ -953,11 +967,15 @@ defmodule Ecto.Migration do
   Executes arbitrary SQL, anonymous function or a keyword command.
 
   The argument is typically a string, containing the SQL command to be executed.
-  Keyword commands exist for non-SQL adapters and are not used in most situations.
+  Keyword commands exist for non-SQL adapters and are not used in most
+  situations.
 
-  Supplying an anonymous function does allow for arbitrary code to execute as
-  part of the migration. This is most often used in combination with `repo/0`
-  by library authors who want to create high-level migration helpers.
+  You may instead run arbitrary code as part of your migration by supplying an
+  anonymous function. This defers execution of the anonymous function until
+  the migration callback has terminated (see [Executing and
+  flushing](#module-executing-and-flushing)). This is most often used in
+  combination with `repo/0` by library authors who want to create high-level
+  migration helpers.
 
   Reversible commands can be defined by calling `execute/2`.
 
@@ -1092,6 +1110,9 @@ defmodule Ecto.Migration do
         add :summary, :text               # Database type
         add :object,  :map                # Elixir type which is handled by the database
         add :custom, :'"UserDefinedType"' # A case-sensitive, user-defined type name
+        add :identity, :integer, generated: "BY DEFAULT AS IDENTITY" # Postgres generated identity column
+        add :generated_psql, :string, generated: "ALWAYS AS (id::text) STORED" # Postgres calculated column
+        add :generated_other, :string, generated: "CAST(id AS char)" # MySQL and TDS calculated column
       end
 
   ## Options
@@ -1112,6 +1133,9 @@ defmodule Ecto.Migration do
     * `:comment` - adds a comment to the added column.
     * `:after` - positions field after the specified one. Only supported on MySQL,
       it is ignored by other databases.
+    * `:generated` - a string representing the expression for a generated column. See
+      above for a comprehensive set of examples for each of the built-in adapters. If
+      specified alongside `:start_value`/`:increment`, those options will be ignored.
     * `:start_value` - option for `:identity` key, represents initial value in sequence
       generation. Default is defined by the database.
     * `:increment` - option for `:identity` key, represents increment value for
@@ -1399,8 +1423,14 @@ defmodule Ecto.Migration do
   end
 
   def references(table, opts) when is_binary(table) and is_list(opts) do
-    opts = Keyword.merge(foreign_key_repo_opts(), opts)
-    reference = struct(%Reference{table: table}, opts)
+    reference_options = Keyword.take(opts, [:prefix])
+
+    opts =
+      foreign_key_repo_opts()
+      |> Keyword.merge(opts)
+      |> Keyword.put(:options, reference_options)
+
+    reference = struct!(%Reference{table: table}, opts)
     check_on_delete!(reference.on_delete)
     check_on_update!(reference.on_update)
 
@@ -1469,7 +1499,7 @@ defmodule Ecto.Migration do
   end
 
   def constraint(table, name, opts) when is_binary(table) and is_list(opts) do
-    struct(%Constraint{table: table, name: name}, opts)
+    struct!(%Constraint{table: table, name: name}, opts)
   end
 
   @doc "Executes queue migration commands."
